@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { WebRTCFileTransfer } from '@/lib/webrtc';
-import { getSocket, joinRoom } from '@/lib/socket';
+import { getSocket } from '@/lib/socket';
 import ShareModal from './ShareModal';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -20,36 +20,71 @@ export default function FileTransfer({ file, onReset }: Props) {
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState<'waiting' | 'connected' | 'transferring' | 'complete'>('waiting');
   const [showShareModal, setShowShareModal] = useState(false);
-  
+  const transferRef = useRef<WebRTCFileTransfer | null>(null);
+  const initializedRef = useRef(false);
 
   useEffect(() => {
-    const id = uuidv4();
-    setRoomId(id);
-    initializeTransfer(id);
-  }, [file]);
+    if (!initializedRef.current) {
+      initializedRef.current = true;
+      const id = uuidv4();
+      setRoomId(id);
+      initializeTransfer(id);
+    }
+
+    return () => {
+      if (transferRef.current) {
+        transferRef.current.destroy();
+        transferRef.current = null;
+      }
+    };
+  }, []);
 
   const initializeTransfer = async (id: string) => {
     try {
       const socket = getSocket();
-      await joinRoom(id);
+      
+      console.log('🟢 Sender joining room:', id);
+      socket.emit('join-room', id);
+      
+      await new Promise<void>((resolve) => {
+        socket.once('room-joined', ({ isInitiator }) => {
+          console.log('🟢 Sender room joined, isInitiator:', isInitiator);
+          resolve();
+        });
+      });
+
       setShowShareModal(true);
 
-      socket.on('peer-joined', async () => {
+      // Wait for receiver to join
+      socket.once('peer-joined', async ({ peerId }) => {
+        console.log('🟢 Receiver joined:', peerId);
         setStatus('connected');
-        toast.success("peer connected , started transferring ")
+        toast.success("reciever connected")
         
-        const transfer = new WebRTCFileTransfer(socket, id);
-        setStatus('transferring');
+        // Wait a bit for receiver to be fully ready
+        await new Promise(resolve => setTimeout(resolve, 1500));
         
-        await transfer.createSender(file, (progress) => {
-          setProgress(progress);
-        });
+        try {
+          console.log('🟢 Creating sender peer connection');
+          transferRef.current = new WebRTCFileTransfer(socket, id, true);
+          setStatus('transferring');
+          
+          await transferRef.current.createSender(file, (progress) => {
+            setProgress(progress);
+          });
 
-        setStatus('complete');
-        toast.success("transfer complete")
+          setStatus('complete');
+          toast.success("transfer complete")
+        } catch (error) {
+          console.error('❌ Transfer error:', error);
+          setStatus('waiting');
+          toast.error("transfer failed")
+        }
       });
+
     } catch (error) {
-      toast.error("failed to initialized transfer")
+      console.error(' Initialization error:', error);
+      toast.error("failed to initialise transfer")
     }
   };
 
@@ -71,7 +106,13 @@ export default function FileTransfer({ file, onReset }: Props) {
 
           <div>
             <p className="text-sm text-muted-foreground mb-2">Status</p>
-            <p className="font-medium capitalize">{status}</p>
+            <div className="flex items-center gap-2">
+              {status === 'waiting' && <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />}
+              {status === 'connected' && <div className="w-2 h-2 rounded-full bg-green-500" />}
+              {status === 'transferring' && <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />}
+              {status === 'complete' && <div className="w-2 h-2 rounded-full bg-green-500" />}
+              <p className="font-medium capitalize">{status}</p>
+            </div>
           </div>
 
           {status === 'transferring' && (

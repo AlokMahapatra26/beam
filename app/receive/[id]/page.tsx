@@ -8,15 +8,15 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Download, Loader2 } from 'lucide-react';
-import { toast } from 'sonner';
 import BottomNav from '@/components/BottomNav';
+import { toast } from 'sonner';
 
 export default function ReceivePage() {
   const params = useParams();
   const roomId = params.id as string;
   const [metadata, setMetadata] = useState<FileMetadata | null>(null);
   const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState<'connecting' | 'receiving' | 'complete'>('connecting');
+  const [status, setStatus] = useState<'connecting' | 'waiting-sender' | 'receiving' | 'complete'>('connecting');
   const [fileBlob, setFileBlob] = useState<Blob | null>(null);
   const transferRef = useRef<WebRTCFileTransfer | null>(null);
   const initializedRef = useRef(false);
@@ -39,41 +39,65 @@ export default function ReceivePage() {
     try {
       const socket = getSocket();
       
+      console.log('🔵 Receiver joining room:', roomId);
       socket.emit('join-room', roomId);
       
-      await new Promise<void>((resolve) => {
-        socket.once('room-joined', ({ isInitiator, roomSize }) => {
-          console.log('Room joined as receiver, room size:', roomSize);
-          resolve();
+      // Wait for room join confirmation
+      const roomInfo = await new Promise<{ isInitiator: boolean, roomSize: number }>((resolve) => {
+        socket.once('room-joined', (info) => {
+          console.log('🔵 Receiver room joined:', info);
+          resolve(info);
         });
       });
 
-      socket.emit('signal', { room: roomId, signal: null });
+      // If room is empty (sender not joined yet), wait
+      if (roomInfo.roomSize === 1) {
+        console.log('🔵 Waiting for sender to join...');
+        setStatus('waiting-sender');
+        toast.success("")
+        
+        // Wait for sender to join
+        await new Promise<void>((resolve) => {
+          socket.once('peer-joined', () => {
+            console.log('🔵 Sender has joined!');
+            resolve();
+          });
+        });
+      }
 
-      await new Promise(resolve => setTimeout(resolve, 500));
+      console.log('🔵 Both peers in room, establishing connection...');
+      setStatus('connecting');
 
+      // Notify sender that receiver is ready
+      socket.emit('receiver-ready', roomId);
+
+      // Small delay to ensure sender is ready
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Create receiver peer connection
       transferRef.current = new WebRTCFileTransfer(socket, roomId, false);
       
       transferRef.current.createReceiver(
         (meta) => {
-          console.log('Metadata received:', meta);
+          console.log('🔵 Metadata received:', meta);
           setMetadata(meta);
           setStatus('receiving');
+          toast.success("getting files")
         },
         (prog) => {
           setProgress(prog);
         },
         (blob) => {
-          console.log('File received completely');
+          console.log('🔵 File received completely');
           setFileBlob(blob);
           setStatus('complete');
-          toast({ title: 'Download ready!', description: 'File received successfully' });
+          toast.success("download ready")
         }
       );
 
     } catch (error) {
-      console.error('Receiver initialization error:', error);
-      toast.error("failed to connect")
+      console.error('❌ Receiver initialization error:', error);
+      toast.error("connection failed")
     }
   };
 
@@ -97,15 +121,23 @@ export default function ReceivePage() {
           <div className="text-center mb-8">
             <h1 className="text-3xl font-bold mb-2">Receive File</h1>
             <p className="text-muted-foreground">
-              Waiting for file transfer
+              {status === 'waiting-sender' && 'Waiting for sender to join...'}
+              {status === 'connecting' && 'Connecting to sender...'}
+              {status === 'receiving' && 'Receiving file...'}
+              {status === 'complete' && 'File received!'}
             </p>
           </div>
 
           <Card className="p-6">
-            {status === 'connecting' && (
+            {(status === 'connecting' || status === 'waiting-sender') && (
               <div className="text-center py-8">
                 <Loader2 className="w-12 h-12 animate-spin mx-auto mb-4 text-primary" />
-                <p className="text-lg font-medium">Connecting to sender...</p>
+                <p className="text-lg font-medium">
+                  {status === 'waiting-sender' ? 'Waiting for sender...' : 'Connecting to sender...'}
+                </p>
+                <p className="text-sm text-muted-foreground mt-2">
+                  This may take a few moments
+                </p>
               </div>
             )}
 
